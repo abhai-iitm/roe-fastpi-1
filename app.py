@@ -7,6 +7,7 @@ import io
 import re
 from typing import Dict, Any
 import logging
+from mangum import Mangum
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -217,6 +218,10 @@ async def health_check():
     """Health check for monitoring"""
     return {"status": "healthy", "service": "invoice-analyzer"}
 
+# Mangum handler for Vercel
+handler = Mangum(app)
+
+# For local development
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
