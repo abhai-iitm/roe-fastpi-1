@@ -1,5 +1,4 @@
 {
-  "version": 2,
   "builds": [
     {
       "src": "app.py",
@@ -11,5 +10,18 @@
       "src": "/(.*)",
       "dest": "app.py"
     }
+  ],
+  "functions": {
+    "app.py": {
+      "maxDuration": 30
+    }
+  },
+  "excludeFiles": [
+    "*.pyc",
+    "__pycache__/**",
+    ".git/**",
+    ".pytest_cache/**",
+    "tests/**",
+    "*.log"
   ]
 }
