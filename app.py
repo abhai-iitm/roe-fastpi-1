@@ -7,7 +7,7 @@ import io
 import re
 from typing import Dict, Any
 import logging
-from mangum import Mangum
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -41,14 +41,21 @@ def extract_tables_from_pdf(pdf_content: bytes) -> list:
                 if page_tables:
                     for table_num, table in enumerate(page_tables):
                         if table and len(table) > 0:
-                            # Convert table to DataFrame
-                            df = pd.DataFrame(table[1:], columns=table[0])
-                            tables.append({
-                                'page': page_num + 1,
-                                'table': table_num + 1,
-                                'data': df
-                            })
-                            logger.info(f"Extracted table from page {page_num + 1}, table {table_num + 1}")
+                            # Filter out empty rows
+                            filtered_table = [row for row in table if any(cell and str(cell).strip() for cell in row)]
+                            
+                            if len(filtered_table) > 1:  # Need header + data
+                                # Convert table to DataFrame
+                                try:
+                                    df = pd.DataFrame(filtered_table[1:], columns=filtered_table[0])
+                                    tables.append({
+                                        'page': page_num + 1,
+                                        'table': table_num + 1,
+                                        'data': df
+                                    })
+                                    logger.info(f"Extracted table from page {page_num + 1}, table {table_num + 1}")
+                                except Exception as e:
+                                    logger.warning(f"Failed to create DataFrame from table: {e}")
                 
     except Exception as e:
         logger.error(f"Error extracting tables from PDF: {str(e)}")
@@ -56,12 +63,12 @@ def extract_tables_from_pdf(pdf_content: bytes) -> list:
     
     return tables
 
-def clean_numeric_value(value: str) -> float:
+def clean_numeric_value(value) -> float:
     """Clean and convert string value to float"""
     if not value or pd.isna(value):
         return 0.0
     
-    # Remove common currency symbols and whitespace
+    # Convert to string and remove common currency symbols and whitespace
     cleaned = str(value).strip()
     cleaned = re.sub(r'[$,€£¥₹\s]', '', cleaned)
     
@@ -83,8 +90,6 @@ def find_contraption_total(tables: list) -> float:
     for table_info in tables:
         df = table_info['data']
         logger.info(f"Processing table from page {table_info['page']}")
-        logger.info(f"Table columns: {list(df.columns)}")
-        logger.info(f"Table shape: {df.shape}")
         
         # Clean column names
         df.columns = [str(col).strip() if col else f"Col_{i}" for i, col in enumerate(df.columns)]
@@ -102,13 +107,12 @@ def find_contraption_total(tables: list) -> float:
         
         # If no specific columns found, use heuristics
         if not item_columns:
-            item_columns = [df.columns[0]]  # Assume first column contains items
+            item_columns = [df.columns[0]] if len(df.columns) > 0 else []
         if not total_columns:
-            # Look for the rightmost numeric-looking column
+            # Look for the rightmost column that contains numeric values
             for col in reversed(df.columns):
-                sample_values = df[col].dropna().head(3)
-                if len(sample_values) > 0:
-                    # Check if values look numeric
+                if len(df[col].dropna()) > 0:
+                    sample_values = df[col].dropna().head(3)
                     numeric_count = 0
                     for val in sample_values:
                         try:
@@ -120,25 +124,26 @@ def find_contraption_total(tables: list) -> float:
                         total_columns = [col]
                         break
         
-        logger.info(f"Item columns: {item_columns}")
-        logger.info(f"Total columns: {total_columns}")
-        
         # Search for Contraption rows
         for item_col in item_columns:
             for total_col in total_columns:
-                contraption_mask = df[item_col].astype(str).str.contains(
-                    'contraption', case=False, na=False
-                )
-                contraption_rows = df[contraption_mask]
-                
-                if not contraption_rows.empty:
-                    logger.info(f"Found {len(contraption_rows)} Contraption rows in {item_col}")
+                try:
+                    contraption_mask = df[item_col].astype(str).str.contains(
+                        'contraption', case=False, na=False
+                    )
+                    contraption_rows = df[contraption_mask]
                     
-                    for idx, row in contraption_rows.iterrows():
-                        total_value = clean_numeric_value(row[total_col])
-                        total_sum += total_value
-                        contraption_rows_found += 1
-                        logger.info(f"Contraption row: '{row[item_col]}' -> Total: {total_value}")
+                    if not contraption_rows.empty:
+                        logger.info(f"Found {len(contraption_rows)} Contraption rows in {item_col}")
+                        
+                        for idx, row in contraption_rows.iterrows():
+                            total_value = clean_numeric_value(row[total_col])
+                            total_sum += total_value
+                            contraption_rows_found += 1
+                            logger.info(f"Contraption row: '{row[item_col]}' -> Total: {total_value}")
+                except Exception as e:
+                    logger.warning(f"Error processing columns {item_col}, {total_col}: {e}")
+                    continue
     
     logger.info(f"Total Contraption rows found: {contraption_rows_found}")
     logger.info(f"Sum of Contraption totals: {total_sum}")
@@ -151,8 +156,10 @@ async def root():
     return {
         "message": "FinSight Invoice Analyzer API",
         "status": "active",
+        "version": "1.0.0",
         "endpoints": {
-            "/analyze": "POST - Upload PDF for invoice analysis"
+            "/analyze": "POST - Upload PDF for invoice analysis",
+            "/health": "GET - Health check"
         }
     }
 
@@ -162,12 +169,12 @@ async def analyze_invoice(file: UploadFile = File(...)) -> Dict[str, Any]:
     Analyze uploaded PDF invoice and return sum of Total column for Contraption rows
     """
     
-    # Validate file type
-    if not file.content_type or "pdf" not in file.content_type.lower():
-        raise HTTPException(
-            status_code=400, 
-            detail="Invalid file type. Please upload a PDF file."
-        )
+    # Validate file
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+        
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a PDF file.")
     
     try:
         # Read PDF content
@@ -218,8 +225,13 @@ async def health_check():
     """Health check for monitoring"""
     return {"status": "healthy", "service": "invoice-analyzer"}
 
-# Mangum handler for Vercel
-handler = Mangum(app)
+# Import and configure Mangum for Vercel only in production
+if os.getenv("VERCEL"):
+    from mangum import Mangum
+    handler = Mangum(app)
+else:
+    # For local development
+    handler = None
 
 # For local development
 if __name__ == "__main__":
